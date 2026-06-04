@@ -1,0 +1,84 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual Environment
+sensor-trust-env/
+venv/
+env/
+.venv/
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Pyenv
+.python-version
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Datasets (large files)
+datasets/
+data/
+*.bin
+*.png
+*.pcd
+*.bag
+
+# Models and checkpoints
+*.pth
+*.pt
+*.ckpt
+checkpoints/
+models/
+
+# Logs
+*.log
+logs/
+tensorboard/
+
+# Output results
+output/
+results/
+*.csv
+*.json
+
+# Environment variables
+.env
+.env.local
+
+# Jupyter notebook outputs (optional - remove if you want to keep outputs)
+# *.ipynb
+
+# Python type checking
+.mypy_cache/
+.pytype/
+
+# Test coverage
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+
+# PyTorch
+*.pth
+*.pt
+
+# Open3D
+*.ply
