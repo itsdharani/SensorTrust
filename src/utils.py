@@ -6,7 +6,7 @@ import os
 
 def get_kitti_base_path():
     """Return the KITTI dataset base path. Works cross-platform."""
-    return Path.home() / "Project" / "datasets" / "kitti"
+    return Path.home() / "SensorTrust" / "datasets" / "kitti"
 
 def load_timestamps_from_file(filepath):
     """Load timestamps from a KITTI timestamps.txt file."""

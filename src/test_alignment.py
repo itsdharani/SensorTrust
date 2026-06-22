@@ -1,74 +1,258 @@
-"""Verify temporal alignment quality."""
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent))
+"""
+KITTI Raw Dataset Loader
+Supports:
+    - Single drive loading
+    - Multi-drive loading
+    - Timestamp validation
+    - Sensor statistics
+"""
 
-from data_loader import KITTILoader
-from alignment import TemporalAligner
+import os
+import pykitti
+import numpy as np
 
-def main():
-    print("Loading KITTI sequence...")
-    loader = KITTILoader('2011_09_26', '0009')
-    
-    print("Running temporal alignment...")
-    aligner = TemporalAligner(loader)
-    aligner.align_all(tolerance_ms=50.0)
-    
-    # Print the formatted report
-    print(aligner.get_quality_report())
-    
-    # Detailed checks
-    q = aligner.alignment_quality
-    
-    print("\n=== PASS/FAIL CHECKS ===")
-    
-    checks = []
-    
-    # Check 1: Drop rate must be low
-    lidar_drop_ok = q['lidar_drop_rate'] < 0.10  # Less than 10% dropped
-    cam_drop_ok = q['camera_drop_rate'] < 0.10
-    checks.append(("LiDAR drop rate < 10%", lidar_drop_ok, q['lidar_drop_rate']))
-    checks.append(("Camera drop rate < 10%", cam_drop_ok, q['camera_drop_rate']))
-    
-    # Check 2: Mean alignment gap must be small
-    lidar_gap_ok = q['mean_lidar_gap_ms'] is not None and q['mean_lidar_gap_ms'] < 25.0
-    cam_gap_ok = q['mean_camera_gap_ms'] is not None and q['mean_camera_gap_ms'] < 25.0
-    checks.append(("LiDAR mean gap < 25 ms", lidar_gap_ok, q['mean_lidar_gap_ms']))
-    checks.append(("Camera mean gap < 25 ms", cam_gap_ok, q['mean_camera_gap_ms']))
-    
-    # Check 3: Max gap must be within tolerance
-    lidar_max_ok = q['max_lidar_gap_ms'] is not None and q['max_lidar_gap_ms'] <= 50.0
-    cam_max_ok = q['max_camera_gap_ms'] is not None and q['max_camera_gap_ms'] <= 50.0
-    checks.append(("LiDAR max gap <= 50 ms", lidar_max_ok, q['max_lidar_gap_ms']))
-    checks.append(("Camera max gap <= 50 ms", cam_max_ok, q['max_camera_gap_ms']))
-    
-    # Check 4: At least 90% of frames aligned
-    lidar_ratio = q['valid_lidar_alignments'] / q['total_lidar_frames']
-    cam_ratio = q['valid_camera_alignments'] / q['total_camera_frames']
-    checks.append(("LiDAR alignment > 90%", lidar_ratio > 0.90, lidar_ratio))
-    checks.append(("Camera alignment > 90%", cam_ratio > 0.90, cam_ratio))
-    
-    # Print results
-    all_pass = True
-    for name, passed, value in checks:
-        status = "PASS" if passed else "FAIL"
-        if not passed:
-            all_pass = False
-        if isinstance(value, float):
-            print(f"  [{status}] {name}: {value:.4f}")
-        else:
-            print(f"  [{status}] {name}: {value}")
-    
-    print("\n=== RESULT ===")
-    if all_pass:
-        print("ALL CHECKS PASSED - Alignment is working correctly.")
-        print("You can proceed to feature extraction (Week 4).")
-    else:
-        print("SOME CHECKS FAILED - Fix alignment before proceeding.")
-        print("Common fixes:")
-        print("  1. Increase tolerance_ms (try 100ms)")
-        print("  2. Check timestamp files are being read correctly")
-        print("  3. Verify you're using the _sync dataset, not _extract")
+from src.utils import (
+    get_kitti_base_path,
+    get_sync_path,
+    load_timestamps_from_file
+)
 
-if __name__ == '__main__':
-    main()
+
+class KITTILoader:
+
+    def __init__(self,
+                 date="2011_09_26",
+                 drive="0009"):
+
+        self.date = date
+        self.drive = drive
+
+        self.base_path = get_kitti_base_path()
+
+        try:
+            self.raw_data = pykitti.raw(
+                base_path=str(self.base_path),
+                date=self.date,
+                drive=self.drive
+            )
+
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed loading KITTI drive {drive}: {e}"
+            )
+
+        self.sync_path = get_sync_path(
+            self.date,
+            self.drive
+        )
+
+        self.timestamps = self._load_all_timestamps()
+
+    # --------------------------------------------------
+    # Timestamp Loading
+    # --------------------------------------------------
+
+    def _load_all_timestamps(self):
+
+        return {
+            "oxts":
+                load_timestamps_from_file(
+                    os.path.join(
+                        self.sync_path,
+                        "oxts",
+                        "timestamps.txt"
+                    )
+                ),
+
+            "velo":
+                load_timestamps_from_file(
+                    os.path.join(
+                        self.sync_path,
+                        "velodyne_points",
+                        "timestamps.txt"
+                    )
+                ),
+
+            "cam2":
+                load_timestamps_from_file(
+                    os.path.join(
+                        self.sync_path,
+                        "image_02",
+                        "timestamps.txt"
+                    )
+                )
+        }
+
+    # --------------------------------------------------
+    # Basic Statistics
+    # --------------------------------------------------
+
+    def get_statistics(self):
+
+        return {
+
+            "drive":
+                self.drive,
+
+            "num_gps_imu":
+                len(self.raw_data.oxts),
+
+            "num_lidar":
+                len(self.raw_data.velo_files),
+
+            "num_camera":
+                len(self.raw_data.cam2_files),
+
+            "gps_imu_hz":
+                1.0 /
+                np.mean(
+                    np.diff(
+                        self.timestamps["oxts"]
+                    )
+                ),
+
+            "lidar_hz":
+                1.0 /
+                np.mean(
+                    np.diff(
+                        self.timestamps["velo"]
+                    )
+                ),
+
+            "camera_hz":
+                1.0 /
+                np.mean(
+                    np.diff(
+                        self.timestamps["cam2"]
+                    )
+                )
+        }
+
+    # --------------------------------------------------
+    # Sampling Time
+    # --------------------------------------------------
+
+    def get_dt(self):
+
+        return np.mean(
+            np.diff(
+                self.timestamps["oxts"]
+            )
+        )
+
+    # --------------------------------------------------
+    # GPS/IMU Access
+    # --------------------------------------------------
+
+    def get_gps_reading(self, index):
+
+        frame = self.raw_data.oxts[index]
+
+        return {
+
+            "lat": frame.packet.lat,
+            "lon": frame.packet.lon,
+            "alt": frame.packet.alt,
+
+            "vf": frame.packet.vf,
+            "vl": frame.packet.vl,
+            "vu": frame.packet.vu,
+
+            "ax": frame.packet.ax,
+            "ay": frame.packet.ay,
+            "az": frame.packet.az,
+
+            "wx": frame.packet.wx,
+            "wy": frame.packet.wy,
+            "wz": frame.packet.wz,
+
+            "roll": frame.packet.roll,
+            "pitch": frame.packet.pitch,
+            "yaw": frame.packet.yaw
+        }
+
+    # --------------------------------------------------
+    # LiDAR Access
+    # --------------------------------------------------
+
+    def get_lidar_scan(self, index):
+
+        return self.raw_data.get_velo(index)
+
+    # --------------------------------------------------
+    # Camera Access
+    # --------------------------------------------------
+
+    def get_camera_image(
+        self,
+        index,
+        camera="cam2"
+    ):
+
+        if camera == "cam2":
+            return self.raw_data.get_cam2(index)
+
+        elif camera == "cam3":
+            return self.raw_data.get_cam3(index)
+
+        raise ValueError(
+            f"Unknown camera: {camera}"
+        )
+
+    # --------------------------------------------------
+    # Multi Drive Loader
+    # --------------------------------------------------
+
+    @staticmethod
+    def load_multiple_drives(
+        date="2011_09_26",
+        drives=None
+    ):
+
+        if drives is None:
+
+            drives = [
+                "0009",
+                "0015",
+                "0051",
+                "0091"
+            ]
+
+        datasets = {}
+
+        for drive in drives:
+
+            print(
+                f"Loading drive {drive}..."
+            )
+
+            datasets[drive] = KITTILoader(
+                date=date,
+                drive=drive
+            )
+
+        print(
+            f"\nLoaded {len(datasets)} drives."
+        )
+
+        return datasets
+
+
+# --------------------------------------------------
+# Quick Test
+# --------------------------------------------------
+
+if __name__ == "__main__":
+
+    datasets = KITTILoader.load_multiple_drives()
+
+    for drive, loader in datasets.items():
+
+        print("\n----------------")
+        print(f"Drive {drive}")
+        print("----------------")
+
+        stats = loader.get_statistics()
+
+        for k, v in stats.items():
+            print(f"{k}: {v}")
