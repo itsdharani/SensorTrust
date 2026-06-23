@@ -7,11 +7,28 @@ Extracts motion signals from OXTS GPS/IMU data:
 """
 import numpy as np
 
+#  helper functions
+def get_vf(frame):
+    if isinstance(frame, dict):
+        return frame["vf"]
+    return frame.packet.vf
+
+
+def get_lat(frame):
+    if isinstance(frame, dict):
+        return frame["lat"]
+    return frame.packet.lat
+
+
+def get_lon(frame):
+    if isinstance(frame, dict):
+        return frame["lon"]
+    return frame.packet.lon
+
+
 
 def extract_gps_speed(oxts_data):
-    """Extract forward speed from GPS (packet.vf)."""
-    return np.array([frame.packet.vf for frame in oxts_data])
-
+    return np.array([get_vf(frame) for frame in oxts_data])
 
 def extract_gps_heading(oxts_data):
     """Compute heading (bearing) from consecutive GPS positions.
@@ -19,8 +36,8 @@ def extract_gps_heading(oxts_data):
     Returns array of shape (N,) in radians [0, 2π).
     First element is NaN.
     """
-    lats = np.array([frame.packet.lat for frame in oxts_data])
-    lons = np.array([frame.packet.lon for frame in oxts_data])
+    lats = np.array([get_lat(frame) for frame in oxts_data])
+    lons = np.array([get_lon(frame) for frame in oxts_data])
     
     dlat = np.diff(lats)
     dlon = np.diff(lons)

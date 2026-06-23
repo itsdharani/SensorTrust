@@ -21,8 +21,8 @@ def compute_icp_residual(scan_curr, scan_prev, transform):
     # ------------------------------------------------------------------
     # Downsample BEFORE any expensive operations
     # ------------------------------------------------------------------
-    scan_curr = scan_curr[::10]
-    scan_prev = scan_prev[::10]
+    # scan_curr = scan_curr[::10]
+    # scan_prev = scan_prev[::10]
 
     # Transform previous scan into current frame
     scan_prev_homog = np.hstack(
