@@ -31,16 +31,9 @@ def compute_node_inconsistency(graph):
     return inconsistency
 
 
-def compute_trust_scores(
-        inconsistency
-):
+def compute_trust_scores(inconsistency):
 
-    trust = {}
-
-    for sensor, value in inconsistency.items():
-
-        trust[sensor] = np.exp(
-            -BETA * value
-        )
-
-    return trust
+    return {
+        sensor: float(np.exp(-BETA * np.nanmean(value)))
+        for sensor, value in inconsistency.items()
+    }
