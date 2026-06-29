@@ -55,7 +55,6 @@ tensorboard/
 
 # Output results
 output/
-results/
 *.csv
 
 # Environment variables
