@@ -4,31 +4,16 @@ BETA = 0.7
 
 
 def compute_node_inconsistency(graph):
-
-    inconsistency = {
-
-        "gps":
-            graph["gps_imu"]
-            + graph["gps_lidar"]
-            + graph["gps_camera"],
-
-        "imu":
-            graph["gps_imu"]
-            + graph["imu_lidar"]
-            + graph["imu_camera"],
-
-        "lidar":
-            graph["gps_lidar"]
-            + graph["imu_lidar"]
-            + graph["lidar_camera"],
-
-        "camera":
-            graph["gps_camera"]
-            + graph["imu_camera"]
-            + graph["lidar_camera"]
+    edges = {
+        "gps":    ["gps_imu", "gps_lidar", "gps_camera"],
+        "imu":    ["gps_imu", "imu_lidar", "imu_camera"],
+        "lidar":  ["gps_lidar", "imu_lidar", "lidar_camera"],
+        "camera": ["gps_camera", "imu_camera", "lidar_camera"],
     }
-
-    return inconsistency
+    return {
+        sensor: np.median([graph[e] for e in edge_list], axis=0)
+        for sensor, edge_list in edges.items()
+    }
 
 
 def compute_trust_scores(inconsistency):

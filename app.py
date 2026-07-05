@@ -28,6 +28,9 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# ── Constant: single source of truth for "is this attack detected" ────────────
+DETECTION_RATE_THRESHOLD = 50  # % of frames flagged to call it a detection
+
 # ── Load data ─────────────────────────────────────────────────────────────────
 @st.cache_data
 def load_features():
@@ -37,6 +40,16 @@ def load_features():
 @st.cache_data
 def load_trust():
     with open('results/trust.json') as f:
+        return json.load(f)
+
+@st.cache_data
+def load_disagreement():
+    with open('results/disagreement.json') as f:
+        return json.load(f)
+
+@st.cache_data
+def load_zsignals():
+    with open('results/zsignals.json') as f:
         return json.load(f)
 
 @st.cache_resource
@@ -62,6 +75,8 @@ def load_mahal(_features):
 
 features                      = load_features()
 trust_data                    = load_trust()
+disagreement_data             = load_disagreement()
+zsignals_data                 = load_zsignals()
 model, device, default_thresh = load_model()
 mahal_detector                = load_mahal(features)
 
@@ -174,16 +189,17 @@ with st.spinner("Running detectors on real KITTI data..."):
     mahal_scores, mahal_alerts, mahal_rate = run_mahalanobis(f1, f2, gmis, mahal_thresh)
     lstm_errors,  lstm_alerts,  lstm_rate  = run_lstm(f1, f2, gmis, lstm_thresh, seq_len)
 
-mahal_detected = mahal_rate > 10
-lstm_detected  = lstm_rate  > 10
-any_detected   = mahal_detected or lstm_detected
+mahal_detected = mahal_rate > DETECTION_RATE_THRESHOLD
+lstm_detected  = lstm_rate  > DETECTION_RATE_THRESHOLD
 
-if is_clean:
-    trust   = {'gps': 0.92, 'imu': 0.91, 'lidar': 0.90, 'camera': 0.89}
-    ranking = [['gps', 0.1], ['imu', 0.1], ['lidar', 0.1], ['camera', 0.1]]
-else:
-    trust   = trust_data[name]['trust']
-    ranking = trust_data[name]['ranking']
+# Real trust scores for every scenario, including Clean — no more hardcoding.
+trust   = trust_data[name]['trust']
+ranking = trust_data[name]['ranking']
+
+TRUST_COMPROMISED_THRESHOLD = 0.3
+trust_detected = any(t < TRUST_COMPROMISED_THRESHOLD for t in trust.values())
+
+any_detected = mahal_detected or lstm_detected or trust_detected
 
 # ── Status Banner ─────────────────────────────────────────────────────────────
 if any_detected and not is_clean:
@@ -333,19 +349,14 @@ with tab3:
 with tab4:
     st.subheader("Sensor Pairwise Disagreement Graph")
 
-    min_len_graph = min(len(f1), len(f2), len(gmis))
-    z_gps   = np.nan_to_num(f1[:min_len_graph])
-    z_imu   = np.nan_to_num(f1[:min_len_graph]) * 0.9
-    z_lidar = np.nan_to_num(f2[:min_len_graph])
-    z_cam   = np.nan_to_num(gmis[:min_len_graph])
-
+    pairs_raw = disagreement_data.get(name, {})  # keys: 'gps_imu', 'gps_lidar', etc.
     pairs = {
-        'GPS ↔ IMU': np.mean(np.abs(z_gps - z_imu)),
-        'GPS ↔ LiDAR': np.mean(np.abs(z_gps - z_lidar)),
-        'GPS ↔ Camera': np.mean(np.abs(z_gps - z_cam)),
-        'IMU ↔ LiDAR': np.mean(np.abs(z_imu - z_lidar)),
-        'IMU ↔ Camera': np.mean(np.abs(z_imu - z_cam)),
-        'LiDAR ↔ Camera': np.mean(np.abs(z_lidar - z_cam)),
+        'GPS ↔ IMU':      pairs_raw.get('gps_imu', 0),
+        'GPS ↔ LiDAR':    pairs_raw.get('gps_lidar', 0),
+        'GPS ↔ Camera':   pairs_raw.get('gps_camera', 0),
+        'IMU ↔ LiDAR':    pairs_raw.get('imu_lidar', 0),
+        'IMU ↔ Camera':   pairs_raw.get('imu_camera', 0),
+        'LiDAR ↔ Camera': pairs_raw.get('lidar_camera', 0),
     }
 
     sensor_inconsistency = {
@@ -375,8 +386,8 @@ with tab4:
                 if i != j:
                     ax5.text(j, i, f'{matrix[i, j]:.2f}', ha='center', va='center', fontsize=11, fontweight='bold',
                             color='white' if matrix[i, j] > mean_val else 'black')
-        plt.colorbar(im, ax=ax5, label='Mean Disagreement')
-        ax5.set_title('Pairwise Disagreement Matrix\n(Warmer = More Disagreement)', fontsize=11)
+        plt.colorbar(im, ax=ax5, label='Mean Disagreement (calibrated)')
+        ax5.set_title('Pairwise Disagreement Matrix\n(Warmer = More Disagreement, relative to each pair\'s own clean baseline)', fontsize=10)
         plt.tight_layout(); st.pyplot(fig5); plt.close()
 
     with gc2:
@@ -402,115 +413,124 @@ with tab4:
 # ── Tab 5: Per-Sensor Analysis ────────────────────────────────────────────────
 with tab5:
     st.subheader("Individual Sensor Analysis")
-    sensor_choice = st.selectbox("Select Sensor", ["GPS", "IMU", "LiDAR", "Camera"])
 
-    if sensor_choice == "GPS":
-        st.info("**GPS Proxy:** Forward speed (vf) and delta-v (speed change over 5-frame window).")
-        ca, cb = st.columns(2)
-        with ca:
-            st.markdown("**Raw GPS Delta-V Signal**")
-            fig_g1, ax_g1 = plt.subplots(figsize=(7, 3))
-            gps_arr = np.nan_to_num(f1[:min(len(f1), 447)])
-            ax_g1.fill_between(range(len(gps_arr)), 0, gps_arr, color='#e74c3c', alpha=0.15)
-            ax_g1.plot(gps_arr, color='#e74c3c', linewidth=0.8)
-            ax_g1.set_xlabel('Frame'); ax_g1.set_ylabel('Delta-V (z-scored)')
-            ax_g1.set_title('GPS Speed Change Signal'); ax_g1.grid(True, alpha=0.3)
-            plt.tight_layout(); st.pyplot(fig_g1); plt.close()
-        with cb:
-            st.markdown("**GPS vs Other Sensors**")
-            fig_g2, ax_g2 = plt.subplots(figsize=(7, 3))
-            ax_g2.plot(np.abs(z_gps - z_imu), color='#3498db', linewidth=0.6, alpha=0.8, label='vs IMU')
-            ax_g2.plot(np.abs(z_gps - z_lidar), color='#2ecc71', linewidth=0.6, alpha=0.8, label='vs LiDAR')
-            ax_g2.plot(np.abs(z_gps - z_cam), color='#f39c12', linewidth=0.6, alpha=0.8, label='vs Camera')
-            ax_g2.set_xlabel('Frame'); ax_g2.set_ylabel('Disagreement'); ax_g2.set_title('GPS vs Other Sensors')
-            ax_g2.legend(fontsize=7); ax_g2.grid(True, alpha=0.3)
-            plt.tight_layout(); st.pyplot(fig_g2); plt.close()
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("vs IMU", f"{np.mean(np.abs(z_gps - z_imu)):.3f}")
-        c2.metric("vs LiDAR", f"{np.mean(np.abs(z_gps - z_lidar)):.3f}")
-        c3.metric("vs Camera", f"{np.mean(np.abs(z_gps - z_cam)):.3f}")
-        c4.metric("Total Inconsistency", f"{sensor_inconsistency['gps']:.3f}")
+    # Real per-sensor z-scored signals for the currently selected scenario —
+    # replaces the old f1/f2/gmis-derived approximation.
+    zsig    = zsignals_data.get(name, {})
+    z_gps   = np.array(zsig.get('gps',    []))
+    z_imu   = np.array(zsig.get('imu',    []))
+    z_lidar = np.array(zsig.get('lidar',  []))
+    z_cam   = np.array(zsig.get('camera', []))
 
-    elif sensor_choice == "IMU":
-        st.info("**IMU Proxy:** Integrated acceleration (delta-v) and direct yaw rate.")
-        ca, cb = st.columns(2)
-        with ca:
-            st.markdown("**Raw IMU Delta-V Signal**")
-            fig_i1, ax_i1 = plt.subplots(figsize=(7, 3))
-            imu_arr = np.nan_to_num(f1[:min(len(f1), 447)]) * 0.9
-            ax_i1.fill_between(range(len(imu_arr)), 0, imu_arr, color='#3498db', alpha=0.15)
-            ax_i1.plot(imu_arr, color='#3498db', linewidth=0.8)
-            ax_i1.set_xlabel('Frame'); ax_i1.set_ylabel('Delta-V (z-scored)')
-            ax_i1.set_title('IMU Speed Change Signal'); ax_i1.grid(True, alpha=0.3)
-            plt.tight_layout(); st.pyplot(fig_i1); plt.close()
-        with cb:
-            st.markdown("**IMU vs Other Sensors**")
-            fig_i2, ax_i2 = plt.subplots(figsize=(7, 3))
-            ax_i2.plot(np.abs(z_imu - z_gps), color='#e74c3c', linewidth=0.6, alpha=0.8, label='vs GPS')
-            ax_i2.plot(np.abs(z_imu - z_lidar), color='#2ecc71', linewidth=0.6, alpha=0.8, label='vs LiDAR')
-            ax_i2.plot(np.abs(z_imu - z_cam), color='#f39c12', linewidth=0.6, alpha=0.8, label='vs Camera')
-            ax_i2.set_xlabel('Frame'); ax_i2.set_ylabel('Disagreement'); ax_i2.set_title('IMU vs Other Sensors')
-            ax_i2.legend(fontsize=7); ax_i2.grid(True, alpha=0.3)
-            plt.tight_layout(); st.pyplot(fig_i2); plt.close()
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("vs GPS", f"{np.mean(np.abs(z_imu - z_gps)):.3f}")
-        c2.metric("vs LiDAR", f"{np.mean(np.abs(z_imu - z_lidar)):.3f}")
-        c3.metric("vs Camera", f"{np.mean(np.abs(z_imu - z_cam)):.3f}")
-        c4.metric("Total Inconsistency", f"{sensor_inconsistency['imu']:.3f}")
+    if len(z_gps) == 0:
+        st.info(f"No real per-sensor signal data exported yet for '{name}'. "
+                f"Extend attack_proxy_map in the notebook and re-export zsignals.json to enable this tab for all scenarios.")
+    else:
+        sensor_choice = st.selectbox("Select Sensor", ["GPS", "IMU", "LiDAR", "Camera"])
 
-    elif sensor_choice == "LiDAR":
-        st.info("**LiDAR Proxy:** ICP residual (point cloud alignment error between consecutive scans).")
-        ca, cb = st.columns(2)
-        with ca:
-            st.markdown("**Raw LiDAR ICP Signal**")
-            fig_l1, ax_l1 = plt.subplots(figsize=(7, 3))
-            lidar_arr = np.nan_to_num(f2[:min(len(f2), 442)])
-            ax_l1.fill_between(range(len(lidar_arr)), 0, lidar_arr, color='#2ecc71', alpha=0.15)
-            ax_l1.plot(lidar_arr, color='#2ecc71', linewidth=0.8)
-            ax_l1.set_xlabel('Frame'); ax_l1.set_ylabel('ICP Residual (z-scored)')
-            ax_l1.set_title('LiDAR Scene-Change Signal'); ax_l1.grid(True, alpha=0.3)
-            plt.tight_layout(); st.pyplot(fig_l1); plt.close()
-        with cb:
-            st.markdown("**LiDAR vs Other Sensors**")
-            fig_l2, ax_l2 = plt.subplots(figsize=(7, 3))
-            ax_l2.plot(np.abs(z_lidar - z_gps), color='#e74c3c', linewidth=0.6, alpha=0.8, label='vs GPS')
-            ax_l2.plot(np.abs(z_lidar - z_imu), color='#3498db', linewidth=0.6, alpha=0.8, label='vs IMU')
-            ax_l2.plot(np.abs(z_lidar - z_cam), color='#f39c12', linewidth=0.6, alpha=0.8, label='vs Camera')
-            ax_l2.set_xlabel('Frame'); ax_l2.set_ylabel('Disagreement'); ax_l2.set_title('LiDAR vs Other Sensors')
-            ax_l2.legend(fontsize=7); ax_l2.grid(True, alpha=0.3)
-            plt.tight_layout(); st.pyplot(fig_l2); plt.close()
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("vs GPS", f"{np.mean(np.abs(z_lidar - z_gps)):.3f}")
-        c2.metric("vs IMU", f"{np.mean(np.abs(z_lidar - z_imu)):.3f}")
-        c3.metric("vs Camera", f"{np.mean(np.abs(z_lidar - z_cam)):.3f}")
-        c4.metric("Total Inconsistency", f"{sensor_inconsistency['lidar']:.3f}")
+        if sensor_choice == "GPS":
+            st.info("**GPS Proxy:** Forward speed (vf) and delta-v (speed change over 5-frame window).")
+            ca, cb = st.columns(2)
+            with ca:
+                st.markdown("**Real GPS Delta-V Signal (z-scored)**")
+                fig_g1, ax_g1 = plt.subplots(figsize=(7, 3))
+                ax_g1.fill_between(range(len(z_gps)), 0, z_gps, color='#e74c3c', alpha=0.15)
+                ax_g1.plot(z_gps, color='#e74c3c', linewidth=0.8)
+                ax_g1.set_xlabel('Frame'); ax_g1.set_ylabel('Delta-V (z-scored)')
+                ax_g1.set_title('GPS Speed Change Signal'); ax_g1.grid(True, alpha=0.3)
+                plt.tight_layout(); st.pyplot(fig_g1); plt.close()
+            with cb:
+                st.markdown("**GPS vs Other Sensors**")
+                fig_g2, ax_g2 = plt.subplots(figsize=(7, 3))
+                ax_g2.plot(np.abs(z_gps - z_imu), color='#3498db', linewidth=0.6, alpha=0.8, label='vs IMU')
+                ax_g2.plot(np.abs(z_gps - z_lidar), color='#2ecc71', linewidth=0.6, alpha=0.8, label='vs LiDAR')
+                ax_g2.plot(np.abs(z_gps - z_cam), color='#f39c12', linewidth=0.6, alpha=0.8, label='vs Camera')
+                ax_g2.set_xlabel('Frame'); ax_g2.set_ylabel('Disagreement'); ax_g2.set_title('GPS vs Other Sensors')
+                ax_g2.legend(fontsize=7); ax_g2.grid(True, alpha=0.3)
+                plt.tight_layout(); st.pyplot(fig_g2); plt.close()
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("vs IMU", f"{np.mean(np.abs(z_gps - z_imu)):.3f}")
+            c2.metric("vs LiDAR", f"{np.mean(np.abs(z_gps - z_lidar)):.3f}")
+            c3.metric("vs Camera", f"{np.mean(np.abs(z_gps - z_cam)):.3f}")
+            c4.metric("Total Inconsistency", f"{sensor_inconsistency['gps']:.3f}")
 
-    elif sensor_choice == "Camera":
-        st.info("**Camera Proxy:** Mean optical flow magnitude (Farneback dense flow). Noisier than other sensors — intentionally downweighted.")
-        ca, cb = st.columns(2)
-        with ca:
-            st.markdown("**Raw Camera Optical Flow Signal**")
-            fig_c1, ax_c1 = plt.subplots(figsize=(7, 3))
-            cam_arr = np.nan_to_num(gmis[:min(len(gmis), 442)])
-            ax_c1.fill_between(range(len(cam_arr)), 0, cam_arr, color='#f39c12', alpha=0.15)
-            ax_c1.plot(cam_arr, color='#f39c12', linewidth=0.8)
-            ax_c1.set_xlabel('Frame'); ax_c1.set_ylabel('Flow (z-scored)')
-            ax_c1.set_title('Camera Optical Flow Signal'); ax_c1.grid(True, alpha=0.3)
-            plt.tight_layout(); st.pyplot(fig_c1); plt.close()
-        with cb:
-            st.markdown("**Camera vs Other Sensors**")
-            fig_c2, ax_c2 = plt.subplots(figsize=(7, 3))
-            ax_c2.plot(np.abs(z_cam - z_gps), color='#e74c3c', linewidth=0.6, alpha=0.8, label='vs GPS')
-            ax_c2.plot(np.abs(z_cam - z_imu), color='#3498db', linewidth=0.6, alpha=0.8, label='vs IMU')
-            ax_c2.plot(np.abs(z_cam - z_lidar), color='#2ecc71', linewidth=0.6, alpha=0.8, label='vs LiDAR')
-            ax_c2.set_xlabel('Frame'); ax_c2.set_ylabel('Disagreement'); ax_c2.set_title('Camera vs Other Sensors')
-            ax_c2.legend(fontsize=7); ax_c2.grid(True, alpha=0.3)
-            plt.tight_layout(); st.pyplot(fig_c2); plt.close()
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("vs GPS", f"{np.mean(np.abs(z_cam - z_gps)):.3f}")
-        c2.metric("vs IMU", f"{np.mean(np.abs(z_cam - z_imu)):.3f}")
-        c3.metric("vs LiDAR", f"{np.mean(np.abs(z_cam - z_lidar)):.3f}")
-        c4.metric("Total Inconsistency", f"{sensor_inconsistency['camera']:.3f}")
+        elif sensor_choice == "IMU":
+            st.info("**IMU Proxy:** Integrated acceleration (delta-v) and direct yaw rate.")
+            ca, cb = st.columns(2)
+            with ca:
+                st.markdown("**Real IMU Delta-V Signal (z-scored)**")
+                fig_i1, ax_i1 = plt.subplots(figsize=(7, 3))
+                ax_i1.fill_between(range(len(z_imu)), 0, z_imu, color='#3498db', alpha=0.15)
+                ax_i1.plot(z_imu, color='#3498db', linewidth=0.8)
+                ax_i1.set_xlabel('Frame'); ax_i1.set_ylabel('Delta-V (z-scored)')
+                ax_i1.set_title('IMU Speed Change Signal'); ax_i1.grid(True, alpha=0.3)
+                plt.tight_layout(); st.pyplot(fig_i1); plt.close()
+            with cb:
+                st.markdown("**IMU vs Other Sensors**")
+                fig_i2, ax_i2 = plt.subplots(figsize=(7, 3))
+                ax_i2.plot(np.abs(z_imu - z_gps), color='#e74c3c', linewidth=0.6, alpha=0.8, label='vs GPS')
+                ax_i2.plot(np.abs(z_imu - z_lidar), color='#2ecc71', linewidth=0.6, alpha=0.8, label='vs LiDAR')
+                ax_i2.plot(np.abs(z_imu - z_cam), color='#f39c12', linewidth=0.6, alpha=0.8, label='vs Camera')
+                ax_i2.set_xlabel('Frame'); ax_i2.set_ylabel('Disagreement'); ax_i2.set_title('IMU vs Other Sensors')
+                ax_i2.legend(fontsize=7); ax_i2.grid(True, alpha=0.3)
+                plt.tight_layout(); st.pyplot(fig_i2); plt.close()
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("vs GPS", f"{np.mean(np.abs(z_imu - z_gps)):.3f}")
+            c2.metric("vs LiDAR", f"{np.mean(np.abs(z_imu - z_lidar)):.3f}")
+            c3.metric("vs Camera", f"{np.mean(np.abs(z_imu - z_cam)):.3f}")
+            c4.metric("Total Inconsistency", f"{sensor_inconsistency['imu']:.3f}")
+
+        elif sensor_choice == "LiDAR":
+            st.info("**LiDAR Proxy:** ICP residual (point cloud alignment error between consecutive scans).")
+            ca, cb = st.columns(2)
+            with ca:
+                st.markdown("**Real LiDAR ICP Signal (z-scored)**")
+                fig_l1, ax_l1 = plt.subplots(figsize=(7, 3))
+                ax_l1.fill_between(range(len(z_lidar)), 0, z_lidar, color='#2ecc71', alpha=0.15)
+                ax_l1.plot(z_lidar, color='#2ecc71', linewidth=0.8)
+                ax_l1.set_xlabel('Frame'); ax_l1.set_ylabel('ICP Residual (z-scored)')
+                ax_l1.set_title('LiDAR Scene-Change Signal'); ax_l1.grid(True, alpha=0.3)
+                plt.tight_layout(); st.pyplot(fig_l1); plt.close()
+            with cb:
+                st.markdown("**LiDAR vs Other Sensors**")
+                fig_l2, ax_l2 = plt.subplots(figsize=(7, 3))
+                ax_l2.plot(np.abs(z_lidar - z_gps), color='#e74c3c', linewidth=0.6, alpha=0.8, label='vs GPS')
+                ax_l2.plot(np.abs(z_lidar - z_imu), color='#3498db', linewidth=0.6, alpha=0.8, label='vs IMU')
+                ax_l2.plot(np.abs(z_lidar - z_cam), color='#f39c12', linewidth=0.6, alpha=0.8, label='vs Camera')
+                ax_l2.set_xlabel('Frame'); ax_l2.set_ylabel('Disagreement'); ax_l2.set_title('LiDAR vs Other Sensors')
+                ax_l2.legend(fontsize=7); ax_l2.grid(True, alpha=0.3)
+                plt.tight_layout(); st.pyplot(fig_l2); plt.close()
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("vs GPS", f"{np.mean(np.abs(z_lidar - z_gps)):.3f}")
+            c2.metric("vs IMU", f"{np.mean(np.abs(z_lidar - z_imu)):.3f}")
+            c3.metric("vs Camera", f"{np.mean(np.abs(z_lidar - z_cam)):.3f}")
+            c4.metric("Total Inconsistency", f"{sensor_inconsistency['lidar']:.3f}")
+
+        elif sensor_choice == "Camera":
+            st.info("**Camera Proxy:** Mean optical flow magnitude (Farneback dense flow). Noisier than other sensors — intentionally downweighted.")
+            ca, cb = st.columns(2)
+            with ca:
+                st.markdown("**Real Camera Optical Flow Signal (z-scored)**")
+                fig_c1, ax_c1 = plt.subplots(figsize=(7, 3))
+                ax_c1.fill_between(range(len(z_cam)), 0, z_cam, color='#f39c12', alpha=0.15)
+                ax_c1.plot(z_cam, color='#f39c12', linewidth=0.8)
+                ax_c1.set_xlabel('Frame'); ax_c1.set_ylabel('Flow (z-scored)')
+                ax_c1.set_title('Camera Optical Flow Signal'); ax_c1.grid(True, alpha=0.3)
+                plt.tight_layout(); st.pyplot(fig_c1); plt.close()
+            with cb:
+                st.markdown("**Camera vs Other Sensors**")
+                fig_c2, ax_c2 = plt.subplots(figsize=(7, 3))
+                ax_c2.plot(np.abs(z_cam - z_gps), color='#e74c3c', linewidth=0.6, alpha=0.8, label='vs GPS')
+                ax_c2.plot(np.abs(z_cam - z_imu), color='#3498db', linewidth=0.6, alpha=0.8, label='vs IMU')
+                ax_c2.plot(np.abs(z_cam - z_lidar), color='#2ecc71', linewidth=0.6, alpha=0.8, label='vs LiDAR')
+                ax_c2.set_xlabel('Frame'); ax_c2.set_ylabel('Disagreement'); ax_c2.set_title('Camera vs Other Sensors')
+                ax_c2.legend(fontsize=7); ax_c2.grid(True, alpha=0.3)
+                plt.tight_layout(); st.pyplot(fig_c2); plt.close()
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("vs GPS", f"{np.mean(np.abs(z_cam - z_gps)):.3f}")
+            c2.metric("vs IMU", f"{np.mean(np.abs(z_cam - z_imu)):.3f}")
+            c3.metric("vs LiDAR", f"{np.mean(np.abs(z_cam - z_lidar)):.3f}")
+            c4.metric("Total Inconsistency", f"{sensor_inconsistency['camera']:.3f}")
 
 # ── Summary Table ─────────────────────────────────────────────────────────────
 st.markdown("---")
@@ -524,7 +544,8 @@ with st.expander("📋 Full Attack Evaluation Matrix", expanded=False):
         _, _, m_rate = run_mahalanobis(f1_a, f2_a, gmis_a, mahal_thresh)
         _, _, l_rate = run_lstm(f1_a, f2_a, gmis_a, lstm_thresh, seq_len)
         top = tr['ranking'][0][0].upper() if tr else 'N/A'
-        detected = m_rate > 50 or l_rate > 50
+        trust_detected_row = any(t < TRUST_COMPROMISED_THRESHOLD for t in tr['trust'].values()) if tr else False
+        detected = m_rate > DETECTION_RATE_THRESHOLD or l_rate > DETECTION_RATE_THRESHOLD or trust_detected_row
         rows.append({
             'Attack': atk, 'F1×': f"{f['F1']/CLEAN_F1:.1f}×", 'F2×': f"{f['F2']/CLEAN_F2:.1f}×",
             'GMIS×': f"{f['GMIS']/CLEAN_GMIS:.1f}×", 'Mahalanobis': f"{m_rate:.0f}%",
@@ -534,6 +555,3 @@ with st.expander("📋 Full Attack Evaluation Matrix", expanded=False):
 
 st.markdown("---")
 st.caption("🛡️ SensorTrust · KITTI Raw 2011_09_26 drive 0009 · LSTM Autoencoder + Mahalanobis + Trust Scoring · CPU-Only · No Labeled Attack Data Required")
-
-
-
