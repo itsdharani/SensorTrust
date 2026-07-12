@@ -1,0 +1,16 @@
+{
+  "0051": {
+    "threshold": 0.6053226470947265,
+    "percentile": 95,
+    "n_clean_windows": 233,
+    "clean_mean": 0.5127531627728704,
+    "clean_std": 0.09539400603394915
+  },
+  "0009": {
+    "threshold": 0.8267195492982864,
+    "percentile": 95,
+    "n_clean_windows": 238,
+    "clean_mean": 0.699867999102889,
+    "clean_std": 0.12622456131225862
+  }
+}
