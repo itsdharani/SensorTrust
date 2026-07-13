@@ -50,6 +50,8 @@ checkpoints/
 # Ignore everything inside any models folder
 models/*
 
+models/
+
 # But keep this file
 !src/models/threshold_per_drive.json
 
