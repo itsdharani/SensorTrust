@@ -46,7 +46,12 @@ data/
 *.pt
 *.ckpt
 checkpoints/
-models/
+
+# Ignore everything inside any models folder
+models/*
+
+# But keep this file
+!src/models/threshold_per_drive.json
 
 # Logs
 *.log
