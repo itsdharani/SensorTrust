@@ -7,10 +7,10 @@
     "clean_std": 0.09539400603394915
   },
   "0009": {
-    "threshold": 1.2468394100666047,
+    "threshold": 1.4520535826683045,
     "percentile": 95,
-    "n_clean_windows": 92,
-    "clean_mean": 1.0183845875055895,
-    "clean_std": 0.1808844678014505
+    "n_clean_windows": 135,
+    "clean_mean": 1.3566415671949033,
+    "clean_std": 0.09622330297237267
   }
 }
